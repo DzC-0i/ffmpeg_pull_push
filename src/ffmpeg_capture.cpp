@@ -5,7 +5,6 @@
 
 FFmpegCapture::FFmpegCapture(const std::string &url) : rtspUrl(url), width(0), height(0)
 {
-    FFmpegNetworkInitializer::init();
 }
 
 FFmpegCapture::~FFmpegCapture()
@@ -15,6 +14,7 @@ FFmpegCapture::~FFmpegCapture()
 
 bool FFmpegCapture::open()
 {
+    FFmpegNetworkInitializer::init();
     AVDictionary *options = NULL;
 
     av_dict_set(&options, "buffer_size", "4096000", 0); // 设置缓存大小,1080p可将值跳到最大
@@ -107,73 +107,82 @@ bool FFmpegCapture::open()
     return true;
 }
 
+inline std::string avErrorString(int errnum)
+{
+    char buf[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(errnum, buf, sizeof(buf));
+    return std::string(buf);
+}
+
 bool FFmpegCapture::readFrame(cv::Mat &outFrame)
 {
     if (!isOpened)
-    {
-        std::cerr << "视频流没有打开" << std::endl;
         return false;
-    }
 
-    // 读取数据包
-    int ret = av_read_frame(formatContext, packet);
-    if (ret < 0)
+    while (true)
     {
-        std::cerr << "读取数据包失败" << std::endl;
-        return false;
-    }
-
-    // 只处理视频流数据包
-    if (packet->stream_index == videoStreamIndex)
-    {
-        // 发送数据包到解码器
-        ret = avcodec_send_packet(codecContext, packet);
-        if (ret < 0)
+        // 1. 尝试从解码器获取帧
+        int ret = avcodec_receive_frame(codecContext, frame);
+        if (ret == 0)
         {
-            std::cerr << "发送数据包到解码器失败" << std::endl;
-            av_packet_unref(packet);
+            break; // 成功获取帧
+        }
+        else if (ret != AVERROR(EAGAIN))
+        {
+            if (ret == AVERROR_EOF)
+                std::cerr << "流结束" << std::endl;
+            else
+                std::cerr << "解码错误: " << avErrorString(ret) << std::endl;
             return false;
         }
 
-        // 接收解码后的帧
-        ret = avcodec_receive_frame(codecContext, frame);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        // 2. 需要新数据包
+        while (true)
         {
-            std::cerr << "接收到结束帧" << std::endl;
-            av_packet_unref(packet);
-            return false;
+            av_packet_unref(packet); // 清理前一个包
+
+            // 读取网络数据包
+            ret = av_read_frame(formatContext, packet);
+            if (ret < 0)
+            {
+                if (ret == AVERROR(EAGAIN))
+                    continue;
+                std::cerr << "读取失败: " << avErrorString(ret) << std::endl;
+                return false;
+            }
+
+            // 3. 只处理视频流
+            if (packet->stream_index == videoStreamIndex)
+            {
+                ret = avcodec_send_packet(codecContext, packet);
+                av_packet_unref(packet); // 立即释放
+                if (ret < 0)
+                {
+                    std::cerr << "发送包失败: " << avErrorString(ret) << std::endl;
+                    return false;
+                }
+                break; // 退出内层循环
+            }
+            av_packet_unref(packet); // 释放非视频包
         }
-        else if (ret < 0)
-        {
-            std::cerr << "接收解码帧失败" << std::endl;
-            av_packet_unref(packet);
-            return false;
-        }
-
-        // 创建OpenCV Mat并分配内存
-        if (outFrame.empty())
-        {
-            outFrame.create(height, width, CV_8UC3); // BGR格式
-        }
-
-        // 准备RGB数据缓冲区
-        uint8_t *rgbData[4] = {outFrame.data, nullptr, nullptr, nullptr};
-        int rgbLinesize[4] = {outFrame.step, 0, 0, 0};
-
-        // 格式转换
-        sws_scale(swsContext, frame->data, frame->linesize, 0, height,
-                  rgbData, rgbLinesize);
-
-        // delete[] rgbData;
-        av_packet_unref(packet);
-        return true;
     }
-    else
+
+    // 4. 准备输出缓冲区 (优化内存复用)
+    if (outFrame.empty() ||
+        outFrame.cols != width ||
+        outFrame.rows != height ||
+        outFrame.type() != CV_8UC3)
     {
-        std::cerr << "未接收到视频流数据包" << std::endl;
-        av_packet_unref(packet);
-        return false;
+        outFrame.create(height, width, CV_8UC3);
     }
+
+    // 5. 转换YUV->RGB
+    uint8_t *dstData[1] = {outFrame.data};
+    int dstLinesize[1] = {static_cast<int>(outFrame.step)};
+    sws_scale(swsContext, frame->data, frame->linesize,
+              0, height, dstData, dstLinesize);
+
+    return true;
 }
 
 void FFmpegCapture::close()
@@ -212,6 +221,9 @@ void FFmpegCapture::close()
         avformat_close_input(&formatContext);
         formatContext = nullptr;
     }
+
+    videoStream = nullptr;
+    videoStreamIndex = -1;
 
     isOpened = false;
 }

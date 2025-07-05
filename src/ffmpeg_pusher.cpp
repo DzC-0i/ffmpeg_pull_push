@@ -6,7 +6,6 @@
 FFmpegPusher::FFmpegPusher(const std::string &url, int w, int h, int fr, const std::string &prot)
     : rtmpUrl(url), width(w), height(h), frameRate(fr), protocol(prot)
 {
-    FFmpegNetworkInitializer::init();
 }
 
 FFmpegPusher::~FFmpegPusher()
@@ -16,6 +15,7 @@ FFmpegPusher::~FFmpegPusher()
 
 bool FFmpegPusher::init()
 {
+    FFmpegNetworkInitializer::init();
     // 确定输出格式
     std::string formatName = "flv"; // RTMP默认使用flv格式
     if (protocol == "rtsp")

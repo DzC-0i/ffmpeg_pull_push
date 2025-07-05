@@ -7,6 +7,7 @@ extern "C"
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/error.h> //av_err2str
 #include <libswscale/swscale.h>
 }
 #include <string>
