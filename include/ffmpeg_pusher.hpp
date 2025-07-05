@@ -6,11 +6,14 @@ extern "C"
 {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/time.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 }
 #include <string>
 #include <iostream>
+
+#include <opencv2/opencv.hpp>
 
 class FFmpegPusher
 {
@@ -33,7 +36,7 @@ public:
     ~FFmpegPusher();
 
     bool init();
-    bool pushFrame(AVFrame *inFrame);
+    bool pushFrame(cv::Mat &inFrame);
     void close();
 };
 

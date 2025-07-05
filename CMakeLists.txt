@@ -3,6 +3,8 @@ project(VideoStreamer)
 
 set(CMAKE_CXX_STANDARD 14)
 
+# 查找 OpenCV 库
+find_package(OpenCV REQUIRED)
 # 查找 FFmpeg 库
 find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBAV REQUIRED
@@ -17,10 +19,12 @@ find_package(PkgConfig REQUIRED)
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${LIBAV_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
     )
 # 添加源文件
 set(SOURCES
     ${CMAKE_SOURCE_DIR}/src/ffmpeg_capture.cpp
+    ${CMAKE_SOURCE_DIR}/src/ffmpeg_metwork_init.cpp
     ${CMAKE_SOURCE_DIR}/src/ffmpeg_pusher.cpp
     ${CMAKE_SOURCE_DIR}/src/main.cpp
 )
@@ -30,6 +34,7 @@ add_executable(video_streamer ${SOURCES})
 # 链接库
 target_link_libraries(video_streamer
     ${LIBAV_LIBRARIES}
+    ${OpenCV_LIBS}
     pthread
 )
 

@@ -12,6 +12,8 @@ extern "C"
 #include <string>
 #include <iostream>
 
+#include <opencv2/opencv.hpp>
+
 class FFmpegCapture
 {
 private:
@@ -31,7 +33,7 @@ public:
     ~FFmpegCapture();
 
     bool open();
-    bool readFrame(AVFrame *outFrame);
+    bool readFrame(cv::Mat &outFrame);
     void close();
     int getWidth() const { return width; }
     int getHeight() const { return height; }

@@ -57,15 +57,7 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // 分配AVFrame用于存储拉取的帧
-    AVFrame *captureFrame = av_frame_alloc();
-    if (!captureFrame)
-    {
-        std::cerr << "无法分配AVFrame" << std::endl;
-        capturer.close();
-        pusher.close();
-        return -1;
-    }
+    cv::Mat captureFrame;
 
     // 主循环
     int64_t frameCount = 0;
@@ -124,7 +116,6 @@ int main(int argc, char *argv[])
 
     // 清理资源
     std::cout << "正在释放资源..." << std::endl;
-    av_frame_free(&captureFrame);
     capturer.close();
     pusher.close();
 

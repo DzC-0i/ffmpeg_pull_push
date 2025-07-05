@@ -1,9 +1,11 @@
 // ffmpeg_capture.cpp
 #include "ffmpeg_capture.hpp"
 
+#include "ffmpeg_metwork_init.hpp"
+
 FFmpegCapture::FFmpegCapture(const std::string &url) : rtspUrl(url), width(0), height(0)
 {
-    avformat_network_init();
+    FFmpegNetworkInitializer::init();
 }
 
 FFmpegCapture::~FFmpegCapture()
@@ -13,8 +15,15 @@ FFmpegCapture::~FFmpegCapture()
 
 bool FFmpegCapture::open()
 {
+    AVDictionary *options = NULL;
+
+    av_dict_set(&options, "buffer_size", "4096000", 0); // 设置缓存大小,1080p可将值跳到最大
+    av_dict_set(&options, "rtsp_transport", "tcp", 0);  // 以tcp的方式打开
+    av_dict_set(&options, "stimeout", "10000000", 0);   // 设置超时断开链接时间，单位us
+    av_dict_set(&options, "max_delay", "500000", 0);    // 设置最大时延
+
     // 打开RTSP流
-    if (avformat_open_input(&formatContext, rtspUrl.c_str(), nullptr, nullptr) < 0)
+    if (avformat_open_input(&formatContext, rtspUrl.c_str(), nullptr, &options) < 0)
     {
         std::cerr << "无法打开RTSP流" << std::endl;
         return false;
@@ -79,8 +88,8 @@ bool FFmpegCapture::open()
     width = codecContext->width;
     height = codecContext->height;
     swsContext = sws_getContext(
-        width, height, codecContext->pix_fmt,
-        width, height, AV_PIX_FMT_YUV420P, // 转换为YUV420P
+        width, height, AV_PIX_FMT_YUV420P,
+        width, height, AV_PIX_FMT_RGB24, // 转换为RGB888
         SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!swsContext)
     {
@@ -90,7 +99,7 @@ bool FFmpegCapture::open()
 
     std::cout << "SWS上下文创建成功: "
               << "输入=" << av_get_pix_fmt_name(codecContext->pix_fmt)
-              << ", 输出=" << av_get_pix_fmt_name(AV_PIX_FMT_YUV420P)
+              << ", 输出=" << av_get_pix_fmt_name(AV_PIX_FMT_RGB24)
               << ", 尺寸=" << width << "x" << height << std::endl;
 
     std::cout << "拉流初始化成功: " << width << "x" << height << std::endl;
@@ -98,10 +107,13 @@ bool FFmpegCapture::open()
     return true;
 }
 
-bool FFmpegCapture::readFrame(AVFrame *outFrame)
+bool FFmpegCapture::readFrame(cv::Mat &outFrame)
 {
     if (!isOpened)
+    {
+        std::cerr << "视频流没有打开" << std::endl;
         return false;
+    }
 
     // 读取数据包
     int ret = av_read_frame(formatContext, packet);
@@ -127,6 +139,7 @@ bool FFmpegCapture::readFrame(AVFrame *outFrame)
         ret = avcodec_receive_frame(codecContext, frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
         {
+            std::cerr << "接收到结束帧" << std::endl;
             av_packet_unref(packet);
             return false;
         }
@@ -137,38 +150,27 @@ bool FFmpegCapture::readFrame(AVFrame *outFrame)
             return false;
         }
 
-        // 确保输出帧已正确分配内存
-        if (!outFrame->data[0])
+        // 创建OpenCV Mat并分配内存
+        if (outFrame.empty())
         {
-            outFrame->format = AV_PIX_FMT_YUV420P;
-            outFrame->width = width;
-            outFrame->height = height;
-            outFrame->pts = 0;
-            if (av_frame_get_buffer(outFrame, 0) < 0)
-            {
-                std::cerr << "无法分配输出帧缓冲区" << std::endl;
-                av_packet_unref(packet);
-                return false;
-            }
+            outFrame.create(height, width, CV_8UC3); // BGR格式
         }
 
-        // 格式转换（如果需要）
-        if (codecContext->pix_fmt != AV_PIX_FMT_YUV420P && swsContext)
-        {
-            sws_scale(swsContext, frame->data, frame->linesize, 0, height,
-                      outFrame->data, outFrame->linesize);
-        }
-        else
-        {
-            // 直接复制
-            av_frame_copy(outFrame, frame);
-        }
+        // 准备RGB数据缓冲区
+        uint8_t *rgbData[4] = {outFrame.data, nullptr, nullptr, nullptr};
+        int rgbLinesize[4] = {outFrame.step, 0, 0, 0};
 
+        // 格式转换
+        sws_scale(swsContext, frame->data, frame->linesize, 0, height,
+                  rgbData, rgbLinesize);
+
+        // delete[] rgbData;
         av_packet_unref(packet);
         return true;
     }
     else
     {
+        std::cerr << "未接收到视频流数据包" << std::endl;
         av_packet_unref(packet);
         return false;
     }

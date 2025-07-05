@@ -1,10 +1,12 @@
 // ffmpeg_pusher.cpp
 #include "ffmpeg_pusher.hpp"
 
+#include "ffmpeg_metwork_init.hpp"
+
 FFmpegPusher::FFmpegPusher(const std::string &url, int w, int h, int fr, const std::string &prot)
     : rtmpUrl(url), width(w), height(h), frameRate(fr), protocol(prot)
 {
-    avformat_network_init();
+    FFmpegNetworkInitializer::init();
 }
 
 FFmpegPusher::~FFmpegPusher()
@@ -54,8 +56,8 @@ bool FFmpegPusher::init()
     codecContext->time_base = {1, frameRate};
     codecContext->framerate = {frameRate, 1};
     codecContext->bit_rate = 4000000; // 4 Mbps
-    codecContext->gop_size = 10;
-    codecContext->max_b_frames = 1;
+    codecContext->gop_size = 25;
+    codecContext->max_b_frames = 0;
     // 强制第一帧为关键帧
     codecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
@@ -66,6 +68,9 @@ bool FFmpegPusher::init()
     // 显式设置profile和level
     av_dict_set(&options, "profile", "main", 0);
     av_dict_set(&options, "level", "3.1", 0);
+
+    // 禁用B帧
+    // av_dict_set(&options, "bframes", "0", 0);
 
     // RTSP特殊设置
     if (protocol == "rtsp")
@@ -104,24 +109,6 @@ bool FFmpegPusher::init()
         std::cerr << "无法复制编码器参数到输出流" << std::endl;
         return false;
     }
-
-    // // 手动复制extradata（包含SPS/PPS）到输出流
-    // if (codecContext->extradata && codecContext->extradata_size > 0)
-    // {
-    //     stream->codecpar->extradata = (uint8_t *)av_malloc(codecContext->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
-    //     if (!stream->codecpar->extradata)
-    //     {
-    //         std::cerr << "无法分配extradata内存" << std::endl;
-    //         return false;
-    //     }
-    //     memcpy(stream->codecpar->extradata, codecContext->extradata, codecContext->extradata_size);
-    //     stream->codecpar->extradata_size = codecContext->extradata_size;
-    //     std::cout << "SPS/PPS参数已复制: 大小=" << codecContext->extradata_size << "字节" << std::endl;
-    // }
-    // else
-    // {
-    //     std::cerr << "警告: 编码器未生成SPS/PPS参数" << std::endl;
-    // }
 
     // 打开输出URL
     if (!(formatContext->oformat->flags & AVFMT_NOFILE))
@@ -163,6 +150,17 @@ bool FFmpegPusher::init()
         return false;
     }
 
+    // 初始化 SWS 上下文用于 RGB 到 YUV420P 的转换
+    swsContext = sws_getContext(
+        width, height, AV_PIX_FMT_RGB24,
+        width, height, codecContext->pix_fmt,
+        SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (!swsContext)
+    {
+        std::cerr << "无法初始化 SWS 上下文" << std::endl;
+        return false;
+    }
+
     std::cout << "推流器初始化成功: "
               << "协议=" << protocol << ", 尺寸=" << width << "x" << height
               << ", 帧率=" << frameRate << std::endl;
@@ -171,38 +169,45 @@ bool FFmpegPusher::init()
     return true;
 }
 
-bool FFmpegPusher::pushFrame(AVFrame *inFrame)
+bool FFmpegPusher::pushFrame(cv::Mat &inFrame)
 {
-    if (!initialized || !inFrame)
+    if (!initialized || inFrame.empty())
         return false;
 
+    if (inFrame.cols != width || inFrame.rows != height)
+    {
+        std::cerr << "帧尺寸与编码器尺寸不匹配" << std::endl;
+        return false;
+    }
+
+    // // 关键修复：正确的时间戳计算
+    // static int64_t start_time = av_gettime_relative(); // 静态变量保持时间基准
+    // int64_t now = av_gettime_relative();
+    // int64_t elapsed = now - start_time;
+    // frame->pts = av_rescale_q(elapsed, {1, 1000000}, codecContext->time_base);
+
     // // 设置帧时间戳
-    // frame->pts = frameCount++;
-    // frame->pkt_dts = frame->pts;
-    // frame->pkt_duration = 1;
-    // frame->key_frame = 1; // 标记关键帧
-
-    // 关键帧检测（根据实际情况设置）
-    // if (frameCount % 25 == 0) {  // 每25帧设为关键帧
-    //     frame->key_frame = 1;
-    //     frame->pict_type = AV_PICTURE_TYPE_I;
-    // } else {
-    //     frame->key_frame = 0;
-    //     frame->pict_type = AV_PICTURE_TYPE_P;
-    // }
-
-    // 设置帧时间戳（关键：使用正确的时间基准）
     frame->pts = frameCount++;
     frame->pkt_dts = frame->pts;
-    frame->pkt_duration = av_rescale_q(1, {1, frameRate}, stream->time_base);
-    frame->key_frame = inFrame->key_frame; // 保留原始关键帧标记
+    frame->pkt_duration = 1;
 
-    // 复制帧数据
-    av_frame_copy(frame, inFrame);
+    // 关键帧检测（根据实际情况设置）
+    if (frameCount % codecContext->gop_size == 0)
+    { // 每25帧设为关键帧
+        // 设置关键帧标记（让编码器决定具体类型）
+        frame->key_frame = 1;
+        // frame->pict_type = AV_PICTURE_TYPE_I;
+    }
+    else
+    {
+        frame->key_frame = 0;
+        // frame->pict_type = AV_PICTURE_TYPE_P;
+    }
 
-    frame->width = inFrame->width;
-    frame->height = inFrame->height;
-    frame->format = inFrame->format;
+    // 转换 OpenCV 的 BGR 图像到 YUV420P 格式
+    const int stride[] = {static_cast<int>(inFrame.step)};
+    sws_scale(swsContext, &inFrame.data, stride, 0, inFrame.rows,
+              frame->data, frame->linesize);
 
     // 发送帧到编码器
     int ret = avcodec_send_frame(codecContext, frame);
@@ -240,6 +245,7 @@ bool FFmpegPusher::pushFrame(AVFrame *inFrame)
         }
     }
 
+    // frameCount++;
     return true;
 }
 
@@ -283,6 +289,11 @@ void FFmpegPusher::close()
     {
         av_frame_free(&frame);
         frame = nullptr;
+    }
+    if (swsContext)
+    {
+        sws_freeContext(swsContext);
+        swsContext = nullptr;
     }
 
     if (codecContext)
