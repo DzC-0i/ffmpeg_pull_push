@@ -1,7 +1,6 @@
 // ffmpeg_pusher.cpp
-#include "ffmpeg_pusher.hpp"
-
-#include "ffmpeg_metwork_init.hpp"
+#include "ffmpeg_pusher.hh"
+#include "ffmpeg_metwork_init.hh"
 
 FFmpegPusher::FFmpegPusher(const std::string &url, int w, int h, int fr, const std::string &prot)
     : rtmpUrl(url), width(w), height(h), frameRate(fr), protocol(prot)
@@ -69,22 +68,6 @@ bool FFmpegPusher::init()
     av_dict_set(&options, "profile", "main", 0);
     av_dict_set(&options, "level", "3.1", 0);
 
-    // 禁用B帧
-    // av_dict_set(&options, "bframes", "0", 0);
-
-    // RTSP特殊设置
-    if (protocol == "rtsp")
-    {
-        av_dict_set(&options, "rtsp_transport", "tcp", 0); // 使用TCP传输
-    }
-    else if (protocol == "rtmp")
-    {
-        // 对于RTMP，不关心文件大小和时长
-        formatContext->oformat->flags |= AVFMT_NOTIMESTAMPS;
-        // 设置flvflags
-        av_dict_set(&options, "flvflags", "no_duration_filesize", 0);
-    }
-
     // 打开编码器
     if (avcodec_open2(codecContext, codec, &options) < 0)
     {
@@ -110,15 +93,32 @@ bool FFmpegPusher::init()
         return false;
     }
 
+    AVDictionary *format_options = nullptr;
+    // RTSP特殊设置
+    if (protocol == "rtsp")
+    {
+        av_dict_set(&options, "rtsp_transport", "tcp", 0); // 使用TCP传输
+    }
+    else if (protocol == "rtmp")
+    {
+        // 对于RTMP，不关心文件大小和时长
+        // formatContext->oformat->flags |= AVFMT_NOTIMESTAMPS;
+        formatContext->flags |= AVFMT_NOTIMESTAMPS; // 正确设置标志的方法
+        // 设置flvflags
+        av_dict_set(&options, "flvflags", "no_duration_filesize", 0);
+    }
+
     // 打开输出URL
     if (!(formatContext->oformat->flags & AVFMT_NOFILE))
     {
-        if (avio_open(&formatContext->pb, rtmpUrl.c_str(), AVIO_FLAG_WRITE) < 0)
+        if (avio_open2(&formatContext->pb, rtmpUrl.c_str(), AVIO_FLAG_WRITE, nullptr, &format_options) < 0)
         {
             std::cerr << "无法打开输出URL (协议: " << protocol << ")" << std::endl;
             return false;
         }
     }
+
+    av_dict_free(&format_options);
 
     // 写入文件头
     if (avformat_write_header(formatContext, nullptr) < 0)

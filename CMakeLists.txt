@@ -23,10 +23,10 @@ include_directories(
     )
 # 添加源文件
 set(SOURCES
-    ${CMAKE_SOURCE_DIR}/src/ffmpeg_capture.cpp
-    ${CMAKE_SOURCE_DIR}/src/ffmpeg_metwork_init.cpp
-    ${CMAKE_SOURCE_DIR}/src/ffmpeg_pusher.cpp
-    ${CMAKE_SOURCE_DIR}/src/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/ffmpeg_capture.cc
+    ${CMAKE_SOURCE_DIR}/src/ffmpeg_metwork_init.cc
+    ${CMAKE_SOURCE_DIR}/src/ffmpeg_pusher.cc
+    ${CMAKE_SOURCE_DIR}/src/main.cc
 )
 # 添加可执行文件
 add_executable(video_streamer ${SOURCES})

@@ -1,7 +1,7 @@
 // ffmpeg_capture.cpp
-#include "ffmpeg_capture.hpp"
+#include "ffmpeg_capture.hh"
 
-#include "ffmpeg_metwork_init.hpp"
+#include "ffmpeg_metwork_init.hh"
 
 FFmpegCapture::FFmpegCapture(const std::string &url) : rtspUrl(url), width(0), height(0)
 {
@@ -46,7 +46,7 @@ bool FFmpegCapture::open()
     videoStream = formatContext->streams[videoStreamIndex];
 
     // 查找解码器
-    AVCodec *codec = avcodec_find_decoder(videoStream->codecpar->codec_id);
+    const AVCodec *codec = avcodec_find_decoder(videoStream->codecpar->codec_id);
     if (!codec)
     {
         std::cerr << "未找到合适的解码器" << std::endl;

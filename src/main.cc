@@ -3,8 +3,8 @@
 #include <string>
 #include <chrono>
 #include <thread>
-#include "ffmpeg_capture.hpp"
-#include "ffmpeg_pusher.hpp"
+#include "ffmpeg_capture.hh"
+#include "ffmpeg_pusher.hh"
 
 bool running = true;
 

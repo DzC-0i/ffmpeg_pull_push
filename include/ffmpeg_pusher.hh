@@ -1,4 +1,4 @@
-// ffmpeg_pusher.hpp
+// ffmpeg_pusher.hh
 #ifndef FFMPEG_PUSHER_H
 #define FFMPEG_PUSHER_H
 
@@ -21,7 +21,7 @@ private:
     AVFormatContext *formatContext = nullptr;
     AVCodecContext *codecContext = nullptr;
     AVStream *stream = nullptr;
-    AVCodec *codec = nullptr;
+    const AVCodec *codec;
     AVFrame *frame = nullptr;
     AVPacket *packet = nullptr;
     SwsContext *swsContext = nullptr;
