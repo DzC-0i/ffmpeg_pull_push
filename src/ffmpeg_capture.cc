@@ -89,6 +89,7 @@ bool FFmpegCapture::open()
     height = codecContext->height;
     swsContext = sws_getContext(
         width, height, AV_PIX_FMT_YUV420P,
+        // width, height, codecContext->pix_fmt,
         width, height, AV_PIX_FMT_RGB24, // 转换为RGB888
         SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!swsContext)

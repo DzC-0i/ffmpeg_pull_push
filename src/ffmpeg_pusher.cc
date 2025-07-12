@@ -2,6 +2,11 @@
 #include "ffmpeg_pusher.hh"
 #include "ffmpeg_metwork_init.hh"
 
+// #include <thread>
+// #include <chrono>
+
+#define MAX_RETRIES 10
+
 FFmpegPusher::FFmpegPusher(const std::string &url, int w, int h, int fr, const std::string &prot)
     : rtmpUrl(url), width(w), height(h), frameRate(fr), protocol(prot)
 {
@@ -14,6 +19,7 @@ FFmpegPusher::~FFmpegPusher()
 
 bool FFmpegPusher::init()
 {
+    // 初始化FFmpeg库
     FFmpegNetworkInitializer::init();
     // 确定输出格式
     std::string formatName = "flv"; // RTMP默认使用flv格式
@@ -30,8 +36,9 @@ bool FFmpegPusher::init()
         return false;
     }
 
-    // 查找编码器
+    // 查找编码器  硬解可以改用H265推流
     codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+    // codec = avcodec_find_encoder(AV_CODEC_ID_HEVC);
     if (!codec)
     {
         std::cerr << "未找到H.264编码器" << std::endl;
@@ -46,33 +53,36 @@ bool FFmpegPusher::init()
         return false;
     }
 
-    // 设置编码器参数
+    // 设置编码器参数 硬解可以改用H265推流
     codecContext->codec_id = AV_CODEC_ID_H264;
+    // codecContext->codec_id = AV_CODEC_ID_HEVC;
     codecContext->codec_type = AVMEDIA_TYPE_VIDEO;
     codecContext->pix_fmt = AV_PIX_FMT_YUV420P;
     codecContext->width = width;
     codecContext->height = height;
     codecContext->time_base = {1, frameRate};
-    codecContext->framerate = {frameRate, 1};
-    codecContext->bit_rate = 4000000; // 4 Mbps
-    codecContext->gop_size = 25;
-    codecContext->max_b_frames = 0;
+    // codecContext->framerate = {frameRate, 1};
+    // 设置目标码率
+    codecContext->bit_rate = 1024000; // 平均要求 1024 kbps
+    // 设置最大码率和缓冲区大小
+    codecContext->rc_max_rate = 2048000;    // 最大限制 2048 kbps
+    codecContext->rc_buffer_size = 4096000; // 缓冲区大小：最大码率缓存池[低延迟优先，缓冲区大小与目标码率相同, 平常最大码率的2-5倍]
+    codecContext->gop_size = 50;
+    codecContext->max_b_frames = 1;
     // 强制第一帧为关键帧
     codecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    // 设置H.264编码器选项
+    // 设置编码器选项
     AVDictionary *options = nullptr;
-    av_dict_set(&options, "preset", "ultrafast", 0);
-    av_dict_set(&options, "tune", "zerolatency", 0);
-    // 显式设置profile和level
-    av_dict_set(&options, "profile", "main", 0);
-    av_dict_set(&options, "level", "3.1", 0);
+    // av_dict_set(&options, "preset", "ultrafast", 0); // 使用快速压缩[带宽占用多]
+    av_dict_set(&options, "preset", "medium", 0); // 使用普通压缩[性能占用多]
+    av_dict_set(&options, "crf", "23", 0);        // 追求画质优先 设置 CRF 值 (H264 CRF 值差不多是23)
 
     // 打开编码器
     if (avcodec_open2(codecContext, codec, &options) < 0)
     {
         std::cerr << "无法打开编码器" << std::endl;
-        av_dict_free(&options);
+        // av_dict_free(&options);
         return false;
     }
     av_dict_free(&options);
@@ -97,7 +107,7 @@ bool FFmpegPusher::init()
     // RTSP特殊设置
     if (protocol == "rtsp")
     {
-        av_dict_set(&options, "rtsp_transport", "tcp", 0); // 使用TCP传输
+        av_dict_set(&format_options, "rtsp_transport", "tcp", 0); // 使用TCP传输
     }
     else if (protocol == "rtmp")
     {
@@ -105,8 +115,11 @@ bool FFmpegPusher::init()
         // formatContext->oformat->flags |= AVFMT_NOTIMESTAMPS;
         formatContext->flags |= AVFMT_NOTIMESTAMPS; // 正确设置标志的方法
         // 设置flvflags
-        av_dict_set(&options, "flvflags", "no_duration_filesize", 0);
+        av_dict_set(&format_options, "flvflags", "no_duration_filesize", 0);
     }
+
+    av_dict_set(&format_options, "tune", "zerolatency", 0);
+    av_dict_set(&format_options, "fflags", "nobuffer", 0);
 
     // 打开输出URL
     if (!(formatContext->oformat->flags & AVFMT_NOFILE))
@@ -180,49 +193,59 @@ bool FFmpegPusher::pushFrame(cv::Mat &inFrame)
         return false;
     }
 
-    // // 关键修复：正确的时间戳计算
-    // static int64_t start_time = av_gettime_relative(); // 静态变量保持时间基准
-    // int64_t now = av_gettime_relative();
-    // int64_t elapsed = now - start_time;
-    // frame->pts = av_rescale_q(elapsed, {1, 1000000}, codecContext->time_base);
+    // static auto lastFrameTime = std::chrono::steady_clock::now();
+    // auto currentTime = std::chrono::steady_clock::now();
+    // auto frameDuration = std::chrono::milliseconds((int)(1000 / frameRate)); // For 25 FPS
 
-    // // 设置帧时间戳
-    frame->pts = frameCount++;
-    frame->pkt_dts = frame->pts;
-    frame->pkt_duration = 1;
+    // if (currentTime - lastFrameTime < frameDuration)
+    // {
+    //     std::this_thread::sleep_for(frameDuration - (currentTime - lastFrameTime));
+    // }
 
-    // 关键帧检测（根据实际情况设置）
-    if (frameCount % codecContext->gop_size == 0)
-    { // 每25帧设为关键帧
-        // 设置关键帧标记（让编码器决定具体类型）
-        frame->key_frame = 1;
-        // frame->pict_type = AV_PICTURE_TYPE_I;
-    }
-    else
-    {
-        frame->key_frame = 0;
-        // frame->pict_type = AV_PICTURE_TYPE_P;
-    }
+    // lastFrameTime = std::chrono::steady_clock::now();
 
-    // 转换 OpenCV 的 BGR 图像到 YUV420P 格式
-    const int stride[] = {static_cast<int>(inFrame.step)};
-    sws_scale(swsContext, &inFrame.data, stride, 0, inFrame.rows,
-              frame->data, frame->linesize);
+    uint8_t *src_data[4];
+    int src_linesize[4];
+    src_data[0] = inFrame.data;
+    src_linesize[0] = inFrame.step;
 
-    // 发送帧到编码器
-    int ret = avcodec_send_frame(codecContext, frame);
-    if (ret < 0)
-    {
-        std::cerr << "发送帧到编码器失败: " << ret << std::endl;
-        return false;
-    }
+    // 将 RGB 数据转换为 YUV420P 并存储在 frame 中
+    sws_scale(swsContext, src_data, src_linesize, 0,
+              inFrame.rows, frame->data, frame->linesize);
+    // sws_freeContext(sws_ctx);
+
+    int retries = 0;
+    bool frame_sent = false;
+    int ret;
 
     // 从编码器接收数据包并写入输出流
-    while (ret >= 0)
+    do
     {
-        ret = avcodec_receive_packet(codecContext, packet);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        frame->pts = frameCount++;
+
+        // 发送帧到编码器
+        ret = avcodec_send_frame(codecContext, frame);
+        if (ret < 0)
         {
+            std::cerr << "发送帧到编码器失败: " << ret << std::endl;
+            return false;
+        }
+
+        ret = avcodec_receive_packet(codecContext, packet);
+        if (ret == AVERROR(EAGAIN))
+        {
+            if (++retries > MAX_RETRIES)
+            {
+                std::cerr << "超过接收数据包的最大重试次数. " << std::endl;
+                return false;
+            }
+
+            return true; // 需要更多帧, 也属于是成功
+        }
+        else if (ret == AVERROR_EOF)
+        {
+            // 编码器完成了所有输入数据的处理
+            frame_sent = false;
             break;
         }
         else if (ret < 0)
@@ -231,21 +254,26 @@ bool FFmpegPusher::pushFrame(cv::Mat &inFrame)
             return false;
         }
 
-        // 转换时间基
-        av_packet_rescale_ts(packet, codecContext->time_base, stream->time_base);
-        packet->stream_index = stream->index;
+        frame_sent = true;
+    } while (!frame_sent);
 
-        // 写入数据包
-        ret = av_interleaved_write_frame(formatContext, packet);
-        av_packet_unref(packet);
-        if (ret < 0)
-        {
-            std::cerr << "写入数据包失败" << std::endl;
-            return false;
-        }
+    // 转换时间基
+    av_packet_rescale_ts(packet, codecContext->time_base, stream->time_base);
+    packet->stream_index = stream->index;
+    // 确保 packet->pts 和 packet->dts 已正确设置
+    if (packet->pts == AV_NOPTS_VALUE || packet->dts == AV_NOPTS_VALUE)
+    {
+        std::cerr << "PTS 或 DTS 设置不正确!" << std::endl;
     }
 
-    // frameCount++;
+    // 写入数据包
+    ret = av_interleaved_write_frame(formatContext, packet);
+    if (ret < 0)
+    {
+        std::cerr << "写入数据包失败" << std::endl;
+        return false;
+    }
+
     return true;
 }
 
@@ -253,27 +281,6 @@ void FFmpegPusher::close()
 {
     if (!initialized)
         return;
-
-    // 刷新编码器
-    avcodec_send_frame(codecContext, nullptr);
-    while (true)
-    {
-        int ret = avcodec_receive_packet(codecContext, packet);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-        {
-            break;
-        }
-        if (ret < 0)
-        {
-            break;
-        }
-
-        av_packet_rescale_ts(packet, codecContext->time_base, stream->time_base);
-        packet->stream_index = stream->index;
-
-        av_interleaved_write_frame(formatContext, packet);
-        av_packet_unref(packet);
-    }
 
     // 写入文件尾
     av_write_trailer(formatContext);

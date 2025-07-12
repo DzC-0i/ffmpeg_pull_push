@@ -88,9 +88,10 @@ int main(int argc, char *argv[])
             // 推流
             if (!pusher.pushFrame(captureFrame))
             {
-                std::cerr << "推流失败" << std::endl;
-                running = false;
-                break;
+                // std::cerr << "推流失败" << std::endl;
+                // running = false;
+                // break;
+                continue;
             }
 
             // 控制帧率
